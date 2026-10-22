@@ -357,7 +357,6 @@ def _(ensure_datasets):
     # what is available on disk.
     dataset_report = ensure_datasets()
     dataset_report
-
     return
 
 
@@ -511,36 +510,44 @@ def train():
     return (model,)
 
 
-@app.function
-def test_set(folder_name):
-    test_images = []
-    test_labels = []
+@app.cell
+def _():
+    def test_set(folder_name):
+        test_images = []
+        test_labels = []
 
-    data_folder = zipfile.Path("CelebDF.zip")
+        data_folder = zipfile.Path("CelebDF.zip")
 
-    # Loading fake images
-    FAKE_DIR = data_folder / f'Celeb_V2/{folder_name}/fake'
-    image_files = [x for x in FAKE_DIR.iterdir() if x.name.endswith(".jpg")][:100]
-    for image_path in image_files:
-        with image_path.open("rb") as f:
-            image = Image.open(f).convert("RGB")
-            test_images.append(image)
-    for i in range(100):
-        test_labels.append(1)
+        # Loading fake images
+        FAKE_DIR = data_folder / f'Celeb_V2/{folder_name}/fake'
+        image_files = [x for x in FAKE_DIR.iterdir() if x.name.endswith(".jpg")][:100]
+        for image_path in image_files:
+            with image_path.open("rb") as f:
+                image = Image.open(f).convert("RGB")
+                test_images.append(image)
+        for i in range(100):
+            test_labels.append(1)
 
-    # Loading real images
-    REAL_DIR = data_folder / f'Celeb_V2/{folder_name}/real'
-    image_files = [x for x in REAL_DIR.iterdir() if x.name.endswith(".jpg")][:100]
-    for image_path in image_files:
-        with image_path.open("rb") as f:
-            image = Image.open(f).convert("RGB")
-            test_images.append(image)
-    for i in range(100):
-        test_labels.append(0)
+        # Loading real images
+        REAL_DIR = data_folder / f'Celeb_V2/{folder_name}/real'
+        image_files = [x for x in REAL_DIR.iterdir() if x.name.endswith(".jpg")][:100]
+        for image_path in image_files:
+            with image_path.open("rb") as f:
+                image = Image.open(f).convert("RGB")
+                test_images.append(image)
+        for i in range(100):
+            test_labels.append(0)
 
-    print("Images:", len(test_images))
-    print("Labels:", len(test_labels))
-    return test_images, test_labels
+        print("Images:", len(test_images))
+        print("Labels:", len(test_labels))
+        return test_images, test_labels
+
+
+    # The notebook keeps its original helper name, but pytest (which some hosts
+    # run over this file) would try to collect it as a test case.
+    test_set.__test__ = False
+
+    return (test_set,)
 
 
 @app.function
@@ -620,7 +627,7 @@ def calculate_metrics(labels, predictions, scores):
 
 
 @app.cell
-def test_celebdf(model):
+def eval_celebdf(model, test_set):
     print("----------------------Testing the CNN Model on unseen Celeb-DF V2 dataset--------------------------\n")
     test_images, test_labels = test_set('Test')
     test_image_tensors, test_labels_tensor = transform_to_tensor_with_resize(test_images, test_labels)
@@ -629,74 +636,81 @@ def test_celebdf(model):
     return (celebdf_metrics,)
 
 
-@app.function
-def test_load_one_frame_per_video(zip_path, folder_name, real_count, fake_count):
+@app.cell
+def _():
+    def test_load_one_frame_per_video(zip_path, folder_name, real_count, fake_count):
 
-    images = []
-    labels = []
+        images = []
+        labels = []
 
-    with zipfile.ZipFile(zip_path, "r") as z:
+        with zipfile.ZipFile(zip_path, "r") as z:
 
-        # ---------- REAL ----------
-        real_folders = sorted(set(
-            path.split("/")[1]
-            for path in z.namelist()
-            if path.startswith("real/") and path.endswith(".png")
-        ))
+            # ---------- REAL ----------
+            real_folders = sorted(set(
+                path.split("/")[1]
+                for path in z.namelist()
+                if path.startswith("real/") and path.endswith(".png")
+            ))
 
-        for folder in real_folders[200:(real_count + 200)]:
+            for folder in real_folders[200:(real_count + 200)]:
 
-            # Find first PNG inside this video folder
-            files = sorted([
-                path for path in z.namelist()
-                if path.startswith(f"real/{folder}/")
+                # Find first PNG inside this video folder
+                files = sorted([
+                    path for path in z.namelist()
+                    if path.startswith(f"real/{folder}/")
+                    and path.endswith(".png")
+                ])
+
+                if len(files) == 0:
+                    continue
+
+                image_path = files[0]
+
+                with z.open(image_path) as f:
+                    image = Image.open(f).convert("RGB")
+                    images.append(image.copy())
+
+                labels.append(0)   # 0 = Real
+
+
+            # ---------- DEEPFAKE ----------
+            fake_folders = sorted(set(
+                path.split("/")[2]
+                for path in z.namelist()
+                if path.startswith(f"fake/{folder_name}/")
                 and path.endswith(".png")
-            ])
+            ))
 
-            if len(files) == 0:
-                continue
+            for folder in fake_folders[:fake_count]:
 
-            image_path = files[0]
+                files = sorted([
+                    path for path in z.namelist()
+                    if path.startswith(f"fake/{folder_name}/{folder}/")
+                    and path.endswith(".png")
+                ])
 
-            with z.open(image_path) as f:
-                image = Image.open(f).convert("RGB")
-                images.append(image.copy())
+                if len(files) == 0:
+                    continue
 
-            labels.append(0)   # 0 = Real
+                image_path = files[0]
 
+                with z.open(image_path) as f:
+                    image = Image.open(f).convert("RGB")
+                    images.append(image.copy())
 
-        # ---------- DEEPFAKE ----------
-        fake_folders = sorted(set(
-            path.split("/")[2]
-            for path in z.namelist()
-            if path.startswith(f"fake/{folder_name}/")
-            and path.endswith(".png")
-        ))
+                labels.append(1)   # 1 = manipulated image
 
-        for folder in fake_folders[:fake_count]:
+        return images, labels
 
-            files = sorted([
-                path for path in z.namelist()
-                if path.startswith(f"fake/{folder_name}/{folder}/")
-                and path.endswith(".png")
-            ])
+    # The notebook keeps its original helper name, but pytest (which some
+    # hosts run over this file) would collect it as a test case.
+    test_load_one_frame_per_video.__test__ = False
 
-            if len(files) == 0:
-                continue
-
-            image_path = files[0]
-
-            with z.open(image_path) as f:
-                image = Image.open(f).convert("RGB")
-                images.append(image.copy())
-
-            labels.append(1)   # 1 = manipulated image
-
-    return images, labels
+    return (test_load_one_frame_per_video,)
 
 
 @app.cell
-def test_face2face(model):
+def eval_face2face(model, test_load_one_frame_per_video):
     print("------------------------Testing on unseen Face2Face dataset from FaceForensics++-----------------------\n")
     images_face2face, labels_face2face = test_load_one_frame_per_video("FF++.zip", "Face2Face", 100, 100)
     image_tensors_face2face, labels_tensor_face2face = transform_to_tensor_with_resize(images_face2face, labels_face2face)
@@ -706,7 +720,7 @@ def test_face2face(model):
 
 
 @app.cell
-def test_faceshifter(model):
+def eval_faceshifter(model, test_load_one_frame_per_video):
     print("------------------------Testing on unseen FaceShifter dataset from FaceForensics++-----------------------\n")
     images_faceshifter, labels_faceshifter = test_load_one_frame_per_video("FF++.zip", "FaceShifter", 100, 100)
     image_tensors_faceshifter, labels_tensor_faceshifter = transform_to_tensor_with_resize(images_faceshifter, labels_faceshifter)
@@ -716,7 +730,7 @@ def test_faceshifter(model):
 
 
 @app.cell
-def test_faceswap(model):
+def eval_faceswap(model, test_load_one_frame_per_video):
     print("------------------------Testing on unseen FaceSwap dataset from FaceForensics++-----------------------\n")
     images_faceswap, labels_faceswap = test_load_one_frame_per_video("FF++.zip", "FaceSwap", 100, 100)
     image_tensors_faceswap, labels_tensor_faceswap = transform_to_tensor_with_resize(images_faceswap, labels_faceswap)
